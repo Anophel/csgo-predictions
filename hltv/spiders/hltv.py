@@ -1,4 +1,6 @@
 import scrapy
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
 
 class HltvSpider(scrapy.Spider):
@@ -6,7 +8,7 @@ class HltvSpider(scrapy.Spider):
     allowed_domains = ['hltv.org']
     start_urls = ['https://www.hltv.org/results']
     
-    NUMLINKS = 10
+    NUMLINKS = 100
     count = 0
 
     def parse(self, response):
@@ -15,7 +17,7 @@ class HltvSpider(scrapy.Spider):
         for l in links:
             yield response.follow(l, callback = self.parse_match)
             self.count += 1
-            if self.count == self.NUMLINKS:
+            if self.count >= self.NUMLINKS:
                 return
 
         next_link = response.css('a.pagination-next::attr(href)').extract_first()
@@ -31,5 +33,84 @@ class HltvSpider(scrapy.Spider):
         team2["name"] = response.css("div.team2-gradient > a > div::text").extract_first()
         team2["points"] = int(response.css("div.team2-gradient > div::text").extract_first())
 
-        yield {'author': author, 'title': title}
+        details = response.css("div.maps > div > div.veto-box > div.preformatted-text::text").extract_first()
+        details = details.splitlines()
+
+        best_of = details[0]
+        match_type = details[2]
+
+        match_time = int(response.css("div.timeAndEvent > div.date::attr(data-unix)").extract_first())
+        match_datetime = datetime.utcfromtimestamp(match_time / 1000)
+        match_date = match_datetime.strftime('%Y-%m-%d')
+
+        player_stats_to = match_datetime.strftime('%Y-%m-%d')
+        player_stats_from = (match_datetime - relativedelta(months=6)).strftime('%Y-%m-%d')
+
+        maps = response.css("div.mapholder > div > div.map-name-holder > div.mapname::text").extract()
+
+        lineups = response.css("div.lineups > div > div.lineup > div.players")
+        lineups_urls = []
+        for i in range(2):
+            urls = lineups[i].css("td.player-image > a::attr(href)").extract()
+            urls = list(map(lambda x: x.replace("player", "stats/players") + f"?startDate={player_stats_from}&endDate={player_stats_to}", urls))
+            lineups_urls.append(urls)
+
+        match = {'team1': team1, 
+                'lineup1': lineups_urls[0],
+                'team2': team2, 
+                'lineup2': lineups_urls[1],
+                'best_of': best_of, 
+                'match_type': match_type,
+                'maps': maps,
+                'date': match_date,
+                'unix_time': match_time }
+        event_url = response.css("div.timeAndEvent > div.event > a::attr(href)").extract_first()
+        
+        yield response.follow(event_url, 
+                callback = self.parse_event,
+                meta={'item': match})
+
+    def parse_event(self, response):
+        match = response.meta['item']
+        event = {}
+        event["prize"] = response.css("table.info > tbody > tr > td.prizepool::text").extract_first()
+        event["teams"] = response.css("table.info > tbody > tr > td.teamsNumber::text").extract_first()
+        event["location"] = response.css("table.info > tbody > tr > td.location > div > span::text").extract_first()
+
+        match["event"] = event
+
+        yield response.follow(match['lineup1'][0], 
+            callback = self.parse_lineups,
+            meta={'item': match})
+        
+    def parse_lineups(self, response):
+        match = response.meta['item']
+        
+        next = None
+        for i in range(1, 3):
+            for j in range(5):
+                player = match['lineup' + str(i)][j]
+                if isinstance(player, str):
+                    if response.url.endswith(player):
+                        p = {}
+                        p['name'] = response.css("div.summaryBreakdownContainer > div.summaryShortInfo > h1.summaryNickname::text").extract_first()
+                        stats = response.css("div.summaryBreakdownContainer > div.summaryStatBreakdownRow > div.summaryStatBreakdown > div.summaryStatBreakdownData > div.summaryStatBreakdownDataValue::text").extract()
+
+                        p['rating'] = float(stats[0])
+                        p['DPR'] = float(stats[1])
+                        p['KAST'] = float(stats[2].strip('%')) / 100
+                        p['impact'] = float(stats[3])
+                        p['ADR'] = float(stats[4])
+                        p['KPR'] = float(stats[5])
+                        match['lineup' + str(i)][j] = p
+                    elif next == None:
+                        next = player
+
+        if next:
+            yield response.follow(next, 
+                callback = self.parse_lineups,
+                meta={'item': match})
+        else:
+            yield match
+        
 

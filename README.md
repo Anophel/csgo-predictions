@@ -1,2 +1,2 @@
 # csgo-predictions
-Temr project for data mining course. Predictions of CS:GO matches
+My term project for data mining course. Predictions of CS:GO matches
