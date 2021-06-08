@@ -1,28 +1,24 @@
 import scrapy
+from random import random
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
 
 class HltvSpider(scrapy.Spider):
     name = 'hltv'
+
     allowed_domains = ['hltv.org']
-    start_urls = ['https://www.hltv.org/results']
+    start_urls = [f"https://www.hltv.org/results?offset={off * 100}" for off in range(100)]
     
-    NUMLINKS = 100
-    count = 0
+    matches = 0
+    events = 0
 
     def parse(self, response):
         links = response.css('div.results-all > div > div.result-con > a.a-reset::attr(href)').extract()
         
+        print("\n\n***\n", len(links), "\n***\n\n")
         for l in links:
             yield response.follow(l, callback = self.parse_match)
-            self.count += 1
-            if self.count >= self.NUMLINKS:
-                return
-
-        next_link = response.css('a.pagination-next::attr(href)').extract_first()
-        if next_link:
-            yield response.follow(next_link, callback = self.parse)
 
     def parse_match(self, response):
         team1 = {}
@@ -66,51 +62,57 @@ class HltvSpider(scrapy.Spider):
                 'unix_time': match_time }
         event_url = response.css("div.timeAndEvent > div.event > a::attr(href)").extract_first()
         
-        yield response.follow(event_url, 
-                callback = self.parse_event,
-                meta={'item': match})
+        self.matches += 1
+        print(["*" for _ in range(10)], 
+            f"self.matches = {self.matches}\tself.events = {self.events}")
+        yield response.follow(event_url + "?_=" + str(random()), 
+                callback = self.get_parse_event(match))
 
-    def parse_event(self, response):
-        match = response.meta['item']
-        event = {}
-        event["prize"] = response.css("table.info > tbody > tr > td.prizepool::text").extract_first()
-        event["teams"] = response.css("table.info > tbody > tr > td.teamsNumber::text").extract_first()
-        event["location"] = response.css("table.info > tbody > tr > td.location > div > span::text").extract_first()
+    def get_parse_event(self, match):
+        def parse_event(response):
+            event = {}
+            event["prize"] = response.css("table.info > tbody > tr > td.prizepool::text").extract_first()
+            event["teams"] = response.css("table.info > tbody > tr > td.teamsNumber::text").extract_first()
+            event["location"] = response.css("table.info > tbody > tr > td.location > div > span::text").extract_first()
+            
+            match["event"] = event
 
-        match["event"] = event
+            self.events += 1
+            print(["*" for _ in range(10)], 
+                f"self.matches = {self.matches}\tself.events = {self.events}")
 
-        yield response.follow(match['lineup1'][0], 
-            callback = self.parse_lineups,
-            meta={'item': match})
+            #yield match
+            yield response.follow(match['lineup1'][0] + "?_=" + str(random()), 
+                callback = self.get_parse_lineups(match))
+        return parse_event
         
-    def parse_lineups(self, response):
-        match = response.meta['item']
-        
-        next = None
-        for i in range(1, 3):
-            for j in range(5):
-                player = match['lineup' + str(i)][j]
-                if isinstance(player, str):
-                    if response.url.endswith(player):
-                        p = {}
-                        p['name'] = response.css("div.summaryBreakdownContainer > div.summaryShortInfo > h1.summaryNickname::text").extract_first()
-                        stats = response.css("div.summaryBreakdownContainer > div.summaryStatBreakdownRow > div.summaryStatBreakdown > div.summaryStatBreakdownData > div.summaryStatBreakdownDataValue::text").extract()
+    def get_parse_lineups(self, match):
+        def parse_lineups(response):
+            next = None
+            for i in range(1, 3):
+                for j in range(5):
+                    player = match['lineup' + str(i)][j]
+                    if isinstance(player, str):
+                        if player in response.url:
+                            p = {}
+                            p['name'] = response.css("div.summaryBreakdownContainer > div.summaryShortInfo > h1.summaryNickname::text").extract_first()
+                            stats = response.css("div.summaryBreakdownContainer > div.summaryStatBreakdownRow > div.summaryStatBreakdown > div.summaryStatBreakdownData > div.summaryStatBreakdownDataValue::text").extract()
 
-                        p['rating'] = float(stats[0])
-                        p['DPR'] = float(stats[1])
-                        p['KAST'] = float(stats[2].strip('%')) / 100
-                        p['impact'] = float(stats[3])
-                        p['ADR'] = float(stats[4])
-                        p['KPR'] = float(stats[5])
-                        match['lineup' + str(i)][j] = p
-                    elif next == None:
-                        next = player
+                            p['rating'] = float(stats[0])
+                            p['DPR'] = float(stats[1])
+                            p['KAST'] = float(stats[2].strip('%')) / 100
+                            p['impact'] = float(stats[3])
+                            p['ADR'] = float(stats[4])
+                            p['KPR'] = float(stats[5])
+                            match['lineup' + str(i)][j] = p
+                        elif next == None:
+                            next = player
 
-        if next:
-            yield response.follow(next, 
-                callback = self.parse_lineups,
-                meta={'item': match})
-        else:
-            yield match
+            if next:
+                yield response.follow(next + "?_=" + str(random()), 
+                    callback = self.get_parse_lineups(match))
+            else:
+                yield match
+        return parse_lineups
         
 
